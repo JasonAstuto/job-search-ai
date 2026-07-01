@@ -31,6 +31,36 @@ public sealed class JobPostingWorkflowTests : IClassFixture<WebApplicationFactor
     }
 
     [Fact]
+    public async Task HealthEndpoint_ReturnsHealthyStatus()
+    {
+        var response = await _client.GetAsync("/health");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<Dictionary<string, object?>>();
+        Assert.NotNull(payload);
+        Assert.Equal("Healthy", payload!["status"]?.ToString());
+    }
+
+    [Fact]
+    public async Task IngestingPostingWithoutRequiredFields_ReturnsValidationError()
+    {
+        var postingRequest = new JobPostingRequest(
+            "",
+            "",
+            "Principal Engineer",
+            "Contoso",
+            "Remote",
+            "https://example.com/jobs/invalid",
+            null,
+            "A sample posting",
+            null);
+
+        var response = await _client.PostAsJsonAsync("/job-postings", postingRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
     public async Task DraftAndApprovalWorkflow_CompletesEndToEnd()
     {
         var postingRequest = new JobPostingRequest(
