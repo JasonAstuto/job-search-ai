@@ -22,3 +22,14 @@ A production-minded platform for AI-assisted executive job search, scoring, and 
 - .NET SDK: 10.x
 - Node.js: 26.x (or at least 22.12+)
 - npm: 10.x or later
+
+## Local Docker development
+
+1. Copy `.env.example` to `.env`
+2. Run `docker compose up --build`
+3. Open the UI at `http://localhost:3000`
+4. Open the backend at `http://localhost:5000`
+
+To stop and remove containers:
+
+- `docker compose down`
