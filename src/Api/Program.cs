@@ -318,3 +318,7 @@ static string GenerateKeywords(JobPostingRequest request)
 
     return string.Join(", ", keywords);
 }
+
+public partial class Program
+{
+}

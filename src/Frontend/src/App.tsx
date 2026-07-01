@@ -23,6 +23,15 @@ type JobPostingRequest = {
   rawMetadata?: string;
 };
 
+type DraftInputState = {
+  resumePath: string;
+  coverLetterPath: string;
+  applicationNotes: string;
+  notes: string;
+};
+
+type ApprovalAction = 'PrepareApproved' | 'PrepareRejected' | 'SubmitApproved' | 'SubmitRejected';
+
 type ApplicationDraftResponse = {
   id: string;
   jobMatchId: string;
@@ -41,7 +50,7 @@ type JobMatchResponse = {
   recommendation?: string;
   matchSummary?: string;
   keywords?: string;
-  state: string;
+  state: string | number;
   createdAt: string;
   updatedAt: string;
   draft?: ApplicationDraftResponse;
@@ -63,7 +72,7 @@ type JobPostingResponse = {
   matches: JobMatchResponse[];
 };
 
-const apiBaseUrl = import.meta.env.DEV ? 'http://localhost:5000' : '';
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:5000';
 
 function deriveSourceJobId(url: string | undefined, sourceJobId: string): string {
   const trimmedSourceJobId = sourceJobId.trim();
@@ -93,6 +102,34 @@ function deriveSourceJobId(url: string | undefined, sourceJobId: string): string
   }
 }
 
+function getWorkflowStateLabel(state: string | number): string {
+  switch (String(state)) {
+    case '0':
+    case 'Discovered':
+      return 'Discovered';
+    case '1':
+    case 'Scored':
+      return 'Scored';
+    case '2':
+    case 'ApprovedToPrepare':
+      return 'Approved to prepare';
+    case '3':
+    case 'Prepared':
+      return 'Prepared';
+    case '4':
+    case 'ApprovedToSubmit':
+      return 'Approved to submit';
+    case '5':
+    case 'Submitted':
+      return 'Submitted';
+    case '6':
+    case 'Rejected':
+      return 'Rejected';
+    default:
+      return `State ${state}`;
+  }
+}
+
 function App() {
   const [postings, setPostings] = useState<JobPostingResponse[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -101,11 +138,15 @@ function App() {
     source: 'LinkedIn',
     sourceJobId: '',
   });
+  const [draftInputs, setDraftInputs] = useState<Record<string, DraftInputState>>({});
+  const [workflowBusy, setWorkflowBusy] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
 
   const fetchPostings = async () => {
     setIsLoading(true);
     setError(null);
+    setFeedback(null);
 
     try {
       const response = await fetch(`${apiBaseUrl}/job-postings`);
@@ -129,6 +170,7 @@ function App() {
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError(null);
+    setFeedback(null);
 
     const inferredJobId = deriveSourceJobId(form.url, form.sourceJobId);
     if (!inferredJobId) {
@@ -157,6 +199,82 @@ function App() {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const updateDraftInput = (matchId: string, field: keyof DraftInputState, value: string) => {
+    setDraftInputs((prev) => ({
+      ...prev,
+      [matchId]: {
+        ...(prev[matchId] ?? { resumePath: '', coverLetterPath: '', applicationNotes: '', notes: '' }),
+        [field]: value,
+      },
+    }));
+  };
+
+  const setMatchBusy = (matchId: string, value: boolean) => {
+    setWorkflowBusy((prev) => ({ ...prev, [matchId]: value }));
+  };
+
+  const handleCreateDraft = async (matchId: string) => {
+    const currentInput = draftInputs[matchId] ?? { resumePath: '', coverLetterPath: '', applicationNotes: '', notes: '' };
+    setMatchBusy(matchId, true);
+    setError(null);
+    setFeedback(null);
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/job-matches/${matchId}/drafts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          resumePath: currentInput.resumePath || undefined,
+          coverLetterPath: currentInput.coverLetterPath || undefined,
+          applicationNotes: currentInput.applicationNotes || undefined,
+        }),
+      });
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.message ?? `API error ${response.status}`);
+      }
+
+      await fetchPostings();
+      setFeedback('Draft created and queued for approval.');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setMatchBusy(matchId, false);
+    }
+  };
+
+  const handleApprovalDecision = async (matchId: string, action: ApprovalAction) => {
+    const currentInput = draftInputs[matchId] ?? { resumePath: '', coverLetterPath: '', applicationNotes: '', notes: '' };
+    setMatchBusy(matchId, true);
+    setError(null);
+    setFeedback(null);
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/job-matches/${matchId}/approval-decisions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action,
+          notes: currentInput.notes || undefined,
+          actor: 'human-operator',
+        }),
+      });
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.message ?? `API error ${response.status}`);
+      }
+
+      await fetchPostings();
+      setFeedback(action === 'PrepareApproved' ? 'Prepare approval recorded.' : 'Prepare rejection recorded.');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setMatchBusy(matchId, false);
     }
   };
 
@@ -231,6 +349,11 @@ function App() {
                 {error}
               </Typography>
             )}
+            {feedback && !error && (
+              <Typography color="success.main" variant="body2">
+                {feedback}
+              </Typography>
+            )}
 
             <Button type="submit" variant="contained" disabled={isSubmitting} sx={{ width: 180 }}>
               {isSubmitting ? 'Submitting…' : 'Ingest now'}
@@ -267,15 +390,73 @@ function App() {
                     <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
                       Matches: {posting.matches.length}
                     </Typography>
-                    {posting.matches.slice(0, 2).map((match) => (
-                      <Box key={match.id} sx={{ mb: 1, p: 1, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
-                        <Typography variant="subtitle2">Match score: {match.score}</Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          State: {match.state}
-                        </Typography>
-                        <Typography variant="body2">{match.matchSummary}</Typography>
-                      </Box>
-                    ))}
+                    {posting.matches.slice(0, 2).map((match) => {
+                      const draftInput = draftInputs[match.id] ?? { resumePath: '', coverLetterPath: '', applicationNotes: '', notes: '' };
+                      const matchStateLabel = getWorkflowStateLabel(match.state);
+                      const isBusy = workflowBusy[match.id] ?? false;
+
+                      return (
+                        <Box key={match.id} sx={{ mb: 1, p: 1, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+                          <Typography variant="subtitle2">Match score: {match.score}</Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            State: {matchStateLabel}
+                          </Typography>
+                          <Typography variant="body2">{match.matchSummary}</Typography>
+
+                          {match.draft ? (
+                            <Box sx={{ mt: 1, display: 'grid', gap: 1 }}>
+                              <Typography variant="body2" color="text.secondary">
+                                Draft prepared for {match.draft.resumePath ?? 'manual review'}.
+                              </Typography>
+                              <TextField
+                                label="Approval notes"
+                                value={draftInput.notes}
+                                onChange={(event) => updateDraftInput(match.id, 'notes', event.target.value)}
+                                size="small"
+                                fullWidth
+                              />
+                              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                                <Button size="small" variant="contained" onClick={() => handleApprovalDecision(match.id, 'PrepareApproved')} disabled={isBusy}>
+                                  Approve prepare
+                                </Button>
+                                <Button size="small" variant="outlined" onClick={() => handleApprovalDecision(match.id, 'PrepareRejected')} disabled={isBusy}>
+                                  Reject prepare
+                                </Button>
+                              </Box>
+                            </Box>
+                          ) : (
+                            <Box sx={{ mt: 1, display: 'grid', gap: 1 }}>
+                              <TextField
+                                label="Resume path"
+                                value={draftInput.resumePath}
+                                onChange={(event) => updateDraftInput(match.id, 'resumePath', event.target.value)}
+                                size="small"
+                                fullWidth
+                              />
+                              <TextField
+                                label="Cover letter path"
+                                value={draftInput.coverLetterPath}
+                                onChange={(event) => updateDraftInput(match.id, 'coverLetterPath', event.target.value)}
+                                size="small"
+                                fullWidth
+                              />
+                              <TextField
+                                label="Application notes"
+                                value={draftInput.applicationNotes}
+                                onChange={(event) => updateDraftInput(match.id, 'applicationNotes', event.target.value)}
+                                size="small"
+                                fullWidth
+                                multiline
+                                minRows={2}
+                              />
+                              <Button size="small" variant="contained" onClick={() => handleCreateDraft(match.id)} disabled={isBusy}>
+                                Create draft
+                              </Button>
+                            </Box>
+                          )}
+                        </Box>
+                      );
+                    })}
                   </CardContent>
                   <CardActions>
                     {posting.url && (
